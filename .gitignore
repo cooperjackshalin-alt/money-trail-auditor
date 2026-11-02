@@ -1,0 +1,6 @@
+node_modules/
+.env
+
+# Wallet secret keys. Never commit these.
+wallets.json
+bank.json

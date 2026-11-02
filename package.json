@@ -1,0 +1,23 @@
+{
+  "name": "money-trail-auditor",
+  "version": "0.1.0",
+  "private": true,
+  "description": "Auditor that checks a seller's onchain money trail before an agent pays it. Solana devnet demo.",
+  "scripts": {
+    "setup": "node scripts/setup.js",
+    "reset": "node scripts/reset.js",
+    "show": "node scripts/show.js",
+    "verify": "node scripts/verify.js",
+    "audit": "node scripts/audit-cli.js",
+    "pay": "node scripts/pay.js",
+    "demo": "node scripts/demo.js"
+  },
+  "engines": {
+    "node": ">=18"
+  },
+  "dependencies": {
+    "@solana/web3.js": "^1.98.0",
+    "bs58": "^4.0.1",
+    "dotenv": "^16.4.5"
+  }
+}

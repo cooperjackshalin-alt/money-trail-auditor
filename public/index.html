@@ -1,0 +1,238 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Money Trail Auditor</title>
+<style>
+  /* Light, high-contrast colors on purpose: they survive washed-out projectors. */
+  :root {
+    --bg: #e9edf3;
+    --card: #ffffff;
+    --ink: #0a0e16;
+    --muted: #39424f;
+    --line: #b9c1cd;
+    --accent: #1240c2;
+    --pass: #0a7531;
+    --block: #b01e18;
+    --block-tint: #fde1dd;
+    --disabled: #7d8696;
+  }
+  * { box-sizing: border-box; }
+  html { -webkit-text-size-adjust: 100%; }
+  body {
+    margin: 0;
+    background: var(--bg);
+    color: var(--ink);
+    font-family: system-ui, -apple-system, "Segoe UI", Roboto, sans-serif;
+    font-size: 20px;
+    line-height: 1.35;
+  }
+  main { max-width: 1400px; margin: 0 auto; padding: 14px 16px 16px; }
+  h1 { font-size: clamp(22px, 2.3vw, 32px); line-height: 1.2; margin: 0 0 12px; font-weight: 700; }
+  a { color: var(--accent); text-decoration: underline; text-underline-offset: 3px; overflow-wrap: anywhere; }
+  .mono { font-family: ui-monospace, Menlo, Consolas, monospace; }
+
+  .cards { display: grid; grid-template-columns: repeat(auto-fit, minmax(min(100%, 440px), 1fr)); gap: 18px; align-items: start; }
+  .card { background: var(--card); border: 2px solid var(--line); border-radius: 16px; padding: 14px 20px 16px; min-width: 0; }
+  .card h2 { margin: 0; font-size: 34px; line-height: 1.15; }
+  .meta { margin: 4px 0 0; color: var(--muted); font-size: 20px; }
+
+  button.pay {
+    margin-top: 12px; width: 100%;
+    font: inherit; font-size: 28px; font-weight: 700;
+    padding: 11px 16px; border: 0; border-radius: 12px;
+    background: var(--accent); color: #fff; cursor: pointer;
+  }
+  button.pay:disabled { background: var(--disabled); cursor: default; }
+  button.pay:focus-visible { outline: 4px solid #f2a900; outline-offset: 3px; }
+
+  .status { margin-top: 16px; font-size: 24px; font-weight: 600; display: flex; align-items: center; gap: 12px; }
+  .spinner { flex: none; width: 26px; height: 26px; border: 4px solid var(--line); border-top-color: var(--accent); border-radius: 50%; animation: spin .8s linear infinite; }
+  @keyframes spin { to { transform: rotate(360deg); } }
+  @media (prefers-reduced-motion: reduce) { .spinner { animation-duration: 2.4s; } }
+
+  .result { margin-top: 12px; }
+  .verdict { display: block; color: #fff; font-size: 46px; font-weight: 800; letter-spacing: .03em; line-height: 1.1; padding: 4px 18px; border-radius: 12px; }
+  .verdict.paid { background: var(--pass); }
+  .verdict.blocked { background: var(--block); }
+  .reason { margin: 10px 0 0; font-size: 23px; font-weight: 600; line-height: 1.3; }
+  .detail { margin: 6px 0 0; font-size: 18px; color: var(--muted); }
+  .big-link { display: inline-block; margin-top: 10px; font-size: 24px; font-weight: 700; }
+
+  table { width: 100%; border-collapse: collapse; margin-top: 8px; font-size: 18px; }
+  caption { text-align: left; font-size: 18px; font-weight: 700; color: var(--muted); padding-bottom: 4px; }
+  th, td { text-align: left; padding: 3px 8px; border-bottom: 1px solid var(--line); }
+  th { font-size: 15px; text-transform: uppercase; letter-spacing: .05em; color: var(--muted); }
+  tr.flag td { background: var(--block-tint); font-weight: 700; }
+  tr.flag td:first-child { box-shadow: inset 6px 0 0 var(--block); }
+  td .mono { white-space: nowrap; }
+  @media (max-width: 600px) {
+    table { font-size: 16px; }
+    th, td { padding: 3px 4px; }
+    th { font-size: 13px; }
+  }
+
+  .notice { background: var(--card); border: 2px solid var(--block); border-radius: 16px; padding: 18px 20px; font-size: 24px; }
+</style>
+</head>
+<body>
+<main>
+  <h1>Our agent wants to buy market data. Before it pays, the auditor checks the seller's money trail.</h1>
+  <div id="cards" class="cards"></div>
+</main>
+
+<script>
+  // Filled in by the server: seller addresses, the agent's address, the payment size. Never keys.
+  const DATA = /*DEMO_DATA*/null;
+
+  const AUDIT_TIMEOUT_MS = 15000; // the auditor itself gives up after 8s
+  const PAY_TIMEOUT_MS = 60000;
+
+  const short = (a) => `${a.slice(0, 4)}…${a.slice(-4)}`;
+  const addrUrl = (a) => `https://explorer.solana.com/address/${a}?cluster=devnet`;
+  const txUrl = (sig) => `https://explorer.solana.com/tx/${sig}?cluster=devnet`;
+
+  function el(tag, props, ...children) {
+    const node = document.createElement(tag);
+    Object.assign(node, props || {});
+    for (const child of children) if (child != null) node.append(child);
+    return node;
+  }
+  const link = (href, text, className) =>
+    el('a', { href, textContent: text, target: '_blank', rel: 'noopener noreferrer', className: className || '' });
+
+  // ---------- talking to the server ----------
+
+  async function post(url, body, ms) {
+    const ctrl = new AbortController();
+    const timer = setTimeout(() => ctrl.abort(), ms);
+    try {
+      const res = await fetch(url, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(body),
+        signal: ctrl.signal,
+        cache: 'no-store',
+      });
+      const data = await res.json().catch(() => null);
+      if (!res.ok || !data) throw new Error(data && data.error ? `server error: ${data.error}` : `server error ${res.status}`);
+      return data;
+    } catch (err) {
+      if (ctrl.signal.aborted) throw new Error(`no answer within ${ms / 1000}s`);
+      if (err instanceof TypeError) throw new Error('the demo server is not reachable');
+      throw err;
+    } finally {
+      clearTimeout(timer);
+    }
+  }
+
+  // ---------- result states ----------
+
+  function showStatus(out, text) {
+    out.replaceChildren(el('div', { className: 'status' }, el('span', { className: 'spinner' }), text));
+  }
+
+  function showPaid(out, result) {
+    out.replaceChildren(el('div', { className: 'result' },
+      el('span', { className: 'verdict paid', textContent: 'PAID' }),
+      el('p', { className: 'reason', textContent: result.audit.reason }),
+      el('p', { className: 'detail', textContent: `The agent paid ${DATA.paymentSol} SOL.` }),
+      link(result.explorerUrl, 'View payment on explorer ↗', 'big-link'),
+    ));
+  }
+
+  // label is BLOCKED, except when a payment's outcome is unknown (see onPay).
+  function showBlocked(out, { label = 'BLOCKED', reason, detail, customers, extraLink }) {
+    out.replaceChildren(el('div', { className: 'result' },
+      el('span', { className: 'verdict blocked', textContent: label }),
+      el('p', { className: 'reason', textContent: reason }),
+      detail ? el('p', { className: 'detail', textContent: `Why: ${detail}` }) : null,
+      extraLink || null,
+      customers && customers.length ? customerTable(customers) : null,
+    ));
+  }
+
+  function customerTable(customers) {
+    const rows = customers.map((c) => el('tr', { className: c.fundedBySeller ? 'flag' : '' },
+      el('td', {}, link(addrUrl(c.address), short(c.address), 'mono')),
+      el('td', {}, c.fundedBySeller ? 'The seller itself' : link(addrUrl(c.funder), short(c.funder), 'mono')),
+      el('td', {}, link(txUrl(c.fundingSig), 'view ↗')),
+    ));
+    return el('table', {},
+      el('caption', { textContent: "Who gave each customer its first SOL" }),
+      el('thead', {}, el('tr', {},
+        el('th', { textContent: 'Customer' }),
+        el('th', { textContent: 'Funded by' }),
+        el('th', { textContent: 'Funding tx' }),
+      )),
+      el('tbody', {}, ...rows),
+    );
+  }
+
+  // ---------- the button ----------
+
+  async function onPay(key, button, out) {
+    if (button.disabled) return;
+    button.disabled = true; // first thing: a second click can't start a second payment
+
+    try {
+      showStatus(out, "Auditing the seller's money trail…");
+      let audit;
+      try {
+        audit = await post('/api/audit', { seller: key }, AUDIT_TIMEOUT_MS);
+      } catch (err) {
+        return showBlocked(out, { reason: "Blocked: couldn't reach the auditor. Nothing was sent.", detail: err.message });
+      }
+      if (audit.verdict !== 'PASS') {
+        return showBlocked(out, { reason: audit.reason, detail: audit.detail, customers: audit.customers });
+      }
+
+      showStatus(out, `Audit passed. Paying ${DATA.paymentSol} SOL…`);
+      let result;
+      try {
+        result = await post('/api/pay', { seller: key }, PAY_TIMEOUT_MS);
+      } catch (err) {
+        // The request may have reached the server, so we can't say nothing was sent.
+        return showBlocked(out, {
+          label: 'NOT CONFIRMED',
+          reason: "The server stopped answering during the payment, so we can't confirm it. Check the agent's wallet before trying again.",
+          detail: err.message,
+          extraLink: link(addrUrl(DATA.agent), "Agent's wallet on explorer ↗", 'big-link'),
+        });
+      }
+      if (result.paid) return showPaid(out, result);
+      const a = result.audit;
+      showBlocked(out, {
+        reason: result.reason,
+        detail: a && a.detail,
+        customers: a && a.verdict === 'BLOCK' ? a.customers : null,
+      });
+    } catch (err) {
+      showBlocked(out, { reason: 'Blocked: something went wrong on the page. Nothing was sent.', detail: err.message });
+    }
+  }
+
+  // ---------- the two cards (identical apart from name and address) ----------
+
+  const cards = document.getElementById('cards');
+  if (!DATA) {
+    cards.replaceChildren(el('div', { className: 'notice', textContent: 'The demo wallets are not set up. Run `npm run reset` in the terminal, then reload this page.' }));
+  } else {
+    for (const key of ['A', 'B']) {
+      const address = DATA.sellers[key];
+      const out = el('div');
+      out.setAttribute('aria-live', 'polite');
+      const button = el('button', { className: 'pay', type: 'button', textContent: `Pay ${DATA.paymentSol} SOL` });
+      button.addEventListener('click', () => onPay(key, button, out));
+      cards.append(el('section', { className: 'card', id: `card-${key}` },
+        el('h2', { textContent: `Seller ${key}` }),
+        el('p', { className: 'meta' }, 'Market data · ', link(addrUrl(address), `${short(address)} ↗`, 'mono')),
+        button,
+        out,
+      ));
+    }
+  }
+</script>
+</body>
+</html>
