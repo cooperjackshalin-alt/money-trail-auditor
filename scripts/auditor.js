@@ -96,7 +96,7 @@ async function runAudit(conn, sellerAddress) {
 
   const problems = [];
   if (tooMany) {
-    problems.push(`${flagged.length} of this seller's ${total} customers got their first funds from the seller's own wallet`);
+    problems.push(`${flagged.length} of this seller's customers got their first funds from the seller's own wallet`);
   }
   if (selfPaymentSigs.length) problems.push('the seller sent money to itself');
 
